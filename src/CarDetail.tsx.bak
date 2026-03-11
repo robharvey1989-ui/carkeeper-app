@@ -1,0 +1,411 @@
+// src/pages/CarDetail.tsx
+import { useEffect, useMemo, useState } from "react";
+import { Link, useParams } from "react-router-dom";
+import { supabase } from "@/lib/supabase";
+
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+
+import AddImagesDialog from "@/components/AddImagesDialog";
+import AddDocumentsDialog from "@/components/AddDocumentsDialog";
+import ImageGalleryView from "@/components/ImageGalleryView";
+import MaintenancePanel from "@/components/MaintenancePanel";
+
+type Id = string;
+
+type CarRow = {
+  id: Id;
+  // Keep these optional so we don't break if columns differ in your DB
+  make?: string | null;
+  model?: string | null;
+  year?: number | null;
+  reg?: string | null;
+  registration?: string | null;
+};
+
+type CarImage = { url: string; name?: string | null; type?: string; size?: number; storage_path?: string };
+
+type DocRow = {
+  id: Id;
+  car_id: Id;
+  storage_path: string;
+  name: string | null;
+  created_at: string;
+};
+
+export default function CarDetail() {
+  const { id } = useParams<{ id: Id }>();
+  const carId = id as Id;
+
+  const [loading, setLoading] = useState(true);
+  const [car, setCar] = useState<CarRow | null>(null);
+  // images are stored on the car row (car.images)
+  const [docs, setDocs] = useState<DocRow[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [showNotes, setShowNotes] = useState(false);
+  const [showMaintenance, setShowMaintenance] = useState(true);
+  const [showMedia, setShowMedia] = useState(false);
+  const [showDocuments, setShowDocuments] = useState(false);
+
+  // Derived: a friendly title
+  const title = useMemo(() => {
+    if (!car) return "";
+    const parts = [car.make, car.model].filter(Boolean).join(" ");
+    return parts || "Car";
+  }, [car]);
+
+  // Best-effort reg (your schema might use reg or registration)
+  const reg = useMemo(() => {
+    if (!car) return "";
+    return car.registration || car.reg || "";
+  }, [car]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function fetchAll() {
+      if (!carId) return;
+
+      setLoading(true);
+
+      // 1) Car
+      const { data: carData, error: carErr } = await supabase
+        .from("cars")
+        .select("*")
+        .eq("id", carId)
+        .maybeSingle();
+
+      if (carErr) {
+        console.error("Load car error:", carErr.message);
+      }
+      if (isMounted) setCar((carData as CarRow) || null);
+
+      // 2) Documents
+      const { data: docsData, error: docsErr } = await supabase
+        .from("car_documents")
+        .select("*")
+        .eq("car_id", carId)
+        .order("created_at", { ascending: false });
+
+      if (docsErr) {
+        console.error("Load documents error:", docsErr.message);
+      }
+      if (isMounted) setDocs(((docsData || []) as DocRow[]) ?? []);
+
+      if (isMounted) setLoading(false);
+    }
+
+    fetchAll();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [carId]);
+
+  const mainImage = useMemo(() => {
+    // Resolve primary image from various possible shapes on the car row
+    const imgs = (car as any)?.images as CarImage[] | undefined;
+    if (Array.isArray(imgs) && imgs.length > 0 && imgs[0]?.url) return imgs[0].url;
+    const anyUrl = (Array.isArray(imgs) ? imgs.find(i => i?.url)?.url : undefined) ||
+      (car as any)?.image_url || (car as any)?.photo_url || (car as any)?.hero_url ||
+      (car as any)?.image || (car as any)?.thumbnail || (car as any)?.coverUrl;
+    return anyUrl || "";
+  }, [car]);
+
+  if (!carId) {
+    return (
+      <div className="p-6">
+        <p>Car not found.</p>
+        <Link to="/garage" className="underline">
+          Back to Garage
+        </Link>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-6xl mx-auto p-6 space-y-6">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <Link to="/garage" className="text-sm underline">
+            Back
+          </Link>
+          <h1 className="text-2xl font-semibold">{title}</h1>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {/* Export PDF — if you have a dialog, hook it up here */}
+          <Button
+            variant="outline"
+            onClick={() => {
+              // Keep your existing PDF export logic here
+              window.dispatchEvent(new CustomEvent("pdf:export", { detail: { carId } }));
+            }}
+          >
+            Export PDF
+          </Button>
+
+          <Button
+            variant="outline"
+            onClick={async () => {
+              try {
+                const payload = { car, documents: docs };
+                const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `${title || "car"}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+              } catch {}
+            }}
+          >
+            Export JSON
+          </Button>
+
+          <Button
+            variant="ghost"
+            className="opacity-70 hover:opacity-100"
+            onClick={async () => {
+              const shareData = { title: title || "My Car", text: title || "My Car", url: window.location.href };
+              try {
+                if ((navigator as any).share) await (navigator as any).share(shareData);
+                else {
+                  await navigator.clipboard.writeText(window.location.href);
+                  alert("Link copied to clipboard");
+                }
+              } catch {}
+            }}
+          >
+            Share
+          </Button>
+
+          {/* Transfer — navigates to your transfer route if you added it */}
+          <Link to={`/transfer/${carId}`}>
+            <Button variant="ghost" className="opacity-70 hover:opacity-100">
+              Transfer
+            </Button>
+          </Link>
+        </div>
+      </div>
+
+      {/* HEADER CARD */}
+      <Card className="bg-gradient-card border-automotive-blue/20">
+        <CardContent className="p-6">
+          <div className="grid grid-cols-12 gap-6">
+            <div className="col-span-12 md:col-span-7">
+              <div className="aspect-[16/9] w-full overflow-hidden rounded-lg bg-muted flex items-center justify-center border">
+                {mainImage ? (
+                  <img
+                    src={mainImage}
+                    alt={title}
+                    className="h-full w-full object-cover"
+                    loading="lazy"
+                  />
+                ) : (
+                  <div className="text-sm text-muted-foreground">No image</div>
+                )}
+              </div>
+            </div>
+
+            <div className="col-span-12 md:col-span-5">
+              <div className="space-y-2">
+                <div className="text-lg font-medium">{title}</div>
+                {/* Year / Reg if available */}
+                <div className="text-sm text-muted-foreground">
+                  {car?.year ? `${car.year}` : null}
+                  {car?.year && reg ? " • " : ""}
+                  {reg}
+                </div>
+              </div>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button
+                  variant={showHistory ? "default" : "outline"}
+                  onClick={() => setShowHistory((v) => !v)}
+                >
+                  {showHistory ? "Hide history" : "Show history"}
+                </Button>
+
+                <Button
+                  variant={showMaintenance ? "default" : "outline"}
+                  onClick={() => setShowMaintenance((v) => !v)}
+                >
+                  {showMaintenance ? "Hide maintenance" : "Show maintenance"}
+                </Button>
+
+                <Button
+                  variant={showDocuments ? "default" : "outline"}
+                  onClick={() => setShowDocuments((v) => !v)}
+                >
+                  {showDocuments ? "Hide documents" : "Show documents"}
+                </Button>
+
+                <Button
+                  variant={showMedia ? "default" : "outline"}
+                  onClick={() => setShowMedia((v) => !v)}
+                >
+                  {showMedia ? "Hide media" : "Show media"}
+                </Button>
+
+                <Button
+                  variant={showNotes ? "default" : "outline"}
+                  onClick={() => setShowNotes((v) => !v)}
+                >
+                  {showNotes ? "Hide notes" : "Show notes"}
+                </Button>
+
+                <Button
+                  variant="destructive"
+                  onClick={async () => {
+                    if (!confirm("Delete this car? This cannot be undone.")) return;
+                    const { error } = await supabase
+                      .from("cars")
+                      .delete()
+                      .eq("id", carId);
+                    if (!error) {
+                      window.location.href = "/";
+                    }
+                  }}
+                >
+                  Delete car
+                </Button>
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* HISTORY (placeholder – keeps your toggle/slot) */}
+      {showHistory && (
+        <Card className="bg-gradient-card border-automotive-blue/20">
+          <CardHeader>
+            <CardTitle>History</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {/* Keep/replace with your existing History component if you have one */}
+            <div className="text-sm text-muted-foreground">
+              Add and view vehicle history here.
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* MAINTENANCE (placeholder section – shows toggle and a slot for your existing view) */}
+      {showMaintenance && (
+        <Card className="bg-gradient-card border-automotive-blue/20">
+          <CardHeader>
+            <CardTitle>Maintenance</CardTitle>
+          </CardHeader>
+          <CardContent className="pt-2">
+            <MaintenancePanel carId={carId} />
+          </CardContent>
+        </Card>
+      )}
+
+      {/* DOCUMENTS */}
+      {showDocuments && (
+        <Card className="bg-gradient-card border-automotive-blue/20">
+          <CardHeader className="flex items-center justify-between">
+            <CardTitle>Documents</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <AddDocumentsDialog
+              carId={carId}
+              onUploaded={(newItems) => setDocs((prev) => [...newItems, ...prev])}
+            />
+
+            {docs.length === 0 ? (
+              <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">
+                No documents yet.
+              </div>
+            ) : (
+              <ul className="space-y-3">
+                {docs.map((d) => (
+                  <li key={d.id} className="flex items-center justify-between gap-3 rounded-md border p-3">
+                    <div className="min-w-0">
+                      <div className="truncate font-medium">{d.name || "Document"}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {new Date(d.created_at).toLocaleString()}
+                      </div>
+                    </div>
+                    <a
+                      href="#"
+                      onClick={async (e) => {
+                        e.preventDefault();
+                        const { data, error } = await supabase.storage
+                          .from("documents")
+                          .createSignedUrl(d.storage_path as any, 3600);
+                        if (error || !data?.signedUrl) return alert("Could not get link");
+                        window.open(data.signedUrl, "_blank");
+                      }}
+                      className="text-sm underline"
+                    >
+                      Open
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* MEDIA */}
+      {showMedia && (
+        <Card>
+          <CardHeader className="flex items-center justify-between">
+            <CardTitle>Media</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {car ? (
+              <ImageGalleryView car={car as any} onUpdated={async () => {
+                const { data } = await supabase.from("cars").select("*").eq("id", carId).maybeSingle();
+                if (data) setCar(data as any);
+              }} />
+            ) : null}
+
+            <div className="mt-2">
+              <AddImagesDialog
+                carId={carId}
+                onUploaded={async () => {
+                  const { data } = await supabase.from("cars").select("*").eq("id", carId).maybeSingle();
+                  if (data) setCar(data as any);
+                }}
+              />
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* NOTES (placeholder) */}
+      {showNotes && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Notes</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {/* Keep/replace with your existing Notes editor/view if present */}
+            <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">
+              Add free-form notes about this car here.
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {loading && (
+        <div className="text-sm text-muted-foreground">Loading...</div>
+      )}
+    </div>
+  );
+}
+
+
+
+
+
+
+
+
+
+
